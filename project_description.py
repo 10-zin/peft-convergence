@@ -63,14 +63,6 @@ Conclusion
 This project will explore whether PEFT’s slower convergence in low-data scenarios can be addressed by using tailored optimization strategies. By rigorously evaluating a range of PEFT techniques like IA3, LoRA, FitBit, and BOFT applied across multiple LLM architectures, we aim to deliver concrete guidelines on how to select optimizers, learning schedules, and hyperparameters to achieve both fast convergence and strong performance—especially under resource constraints. The findings will be valuable both for academic inquiry (clarifying an under-explored aspect of PEFT) and for industry practitioners looking to train models efficiently on small data.
 """
 
-# given the above description, create a baseline peft training script.
-# make it very simple and easy to understand.
-# ensure it works for the above mentioned models and datasets.
-# ensure you can log all the metrics mentioned in the description.
-# mainly convergence speed, final accuracy, memory footprint, training time, any instability instances like gradient explosions etc.
-# use wandb to log the metrics.
-# use latest version of everything + all the best practices.
-
 
 
 

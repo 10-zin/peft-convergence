@@ -1,0 +1,54 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE related files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Wandb
+wandb/
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.h5
+*.model
+
+# Logs
+logs/
+*.log
+
+# Python environment
+*.egg-info/
+.installed.cfg
+*.egg 

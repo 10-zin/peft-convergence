@@ -117,7 +117,7 @@ If you've enabled Weights & Biases logging (`--log_wandb`), you can view experim
 
 - `peft_training.py`: Main script for PEFT training and evaluation
 - `run_local_test.py`: Script for running a quick local test
-- `peft_convergence_colab.ipynb`: Notebook for running experiments in Google Colab
+- `train_lora.ipynb`: Notebook for running experiments in Google Colab
 - `requirements.txt`: Required Python packages
 - `README.md`: This file
 

@@ -57,6 +57,17 @@ def parse_args():
         help="PEFT method to use",
     )
     parser.add_argument(
+        "--use_peft",
+        action="store_true",
+        default=True,
+        help="Whether to use PEFT (True) or full fine-tuning (False)",
+    )
+    parser.add_argument(
+        "--full_ft",
+        action="store_true",
+        help="Use full fine-tuning instead of PEFT (overrides --use_peft)",
+    )
+    parser.add_argument(
         "--optimizer",
         type=str,
         default="adamw",
@@ -105,7 +116,13 @@ def parse_args():
         action="store_true",
         help="Whether to log metrics to Weights & Biases",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Override use_peft if full_ft is specified
+    if args.full_ft:
+        args.use_peft = False
+    
+    return args
 
 
 # Helper function to get optimizer
@@ -257,10 +274,12 @@ def train_and_evaluate(args):
     
     # Initialize wandb if enabled
     if args.log_wandb:
+        # For the experiment name, include whether we're using PEFT or full fine-tuning
+        training_type = args.peft_method if args.use_peft else "full_ft"
         wandb.init(
             project="peft-convergence",
             config=vars(args),
-            name=f"{args.peft_method}_{args.optimizer}_{args.lr_schedule}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            name=f"{training_type}_{args.optimizer}_{args.lr_schedule}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         )
     
     # Initialize accelerator
@@ -296,10 +315,13 @@ def train_and_evaluate(args):
     print(f"Preparing dataset: {args.dataset_name}")
     dataset, num_labels = prepare_dataset(args.dataset_name, tokenizer, args.max_samples, model_type)
     
-    # Create PEFT model
-    print(f"Applying PEFT method: {args.peft_method}")
-    peft_config = get_peft_config(args.peft_method, model_type)
-    model = get_peft_model(model, peft_config)
+    # Create PEFT model if specified, otherwise use the base model for full fine-tuning
+    if args.use_peft:
+        print(f"Applying PEFT method: {args.peft_method}")
+        peft_config = get_peft_config(args.peft_method, model_type)
+        model = get_peft_model(model, peft_config)
+    else:
+        print("Using full fine-tuning (no PEFT)")
     
     # Print number of trainable parameters
     total_params = sum(p.numel() for p in model.parameters())

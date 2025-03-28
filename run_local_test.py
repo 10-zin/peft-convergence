@@ -9,9 +9,24 @@ in Google Colab with GPUs.
 import os
 import subprocess
 import sys
+import argparse
 
-def run_test():
-    print("Running a minimal PEFT training test...")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run a quick test of PEFT vs Full Fine-tuning")
+    parser.add_argument(
+        "--full_ft", 
+        action="store_true",
+        help="Run with full fine-tuning instead of PEFT"
+    )
+    return parser.parse_args()
+
+def run_test(full_ft=False):
+    print("Running a minimal training test...")
+    
+    if full_ft:
+        print("Mode: Full Fine-tuning (no PEFT)")
+    else:
+        print("Mode: PEFT with LoRA")
     
     # Use a very small dataset subset for quick testing
     cmd = [
@@ -28,6 +43,10 @@ def run_test():
         "--max_samples", "32",                   # Very few samples for quick test
     ]
     
+    # Add full fine-tuning flag if specified
+    if full_ft:
+        cmd.append("--full_ft")
+    
     # Add wandb logging if wanted (commented out by default)
     # cmd.append("--log_wandb")
     
@@ -43,4 +62,5 @@ def run_test():
     print("- Enable wandb logging with --log_wandb")
 
 if __name__ == "__main__":
-    run_test() 
+    args = parse_args()
+    run_test(full_ft=args.full_ft) 

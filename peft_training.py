@@ -33,6 +33,23 @@ from peft import (
 from sklearn.metrics import accuracy_score, f1_score
 from accelerate import Accelerator
 
+# Helper function to print trainable parameters
+def print_trainable_parameters(model):
+    """
+    Prints the number of trainable parameters in the model.
+    """
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        all_param += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+    # Avoid division by zero if the model has no parameters
+    trainable_percent = 100 * trainable_params / all_param if all_param > 0 else 0
+    print(
+        f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {trainable_percent:.4f}%"
+    )
+
 # Setup command line arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="PEFT Convergence Analysis")
@@ -53,8 +70,8 @@ def parse_args():
         "--peft_method",
         type=str,
         default="lora",
-        choices=["lora", "prefix_tuning", "ia3"],
-        help="PEFT method to use",
+        choices=["lora", "bitfit"],  # Only implemented methods
+        help="PEFT method to use (lora or bitfit)",
     )
     parser.add_argument(
         "--use_peft",
@@ -190,48 +207,44 @@ def prepare_dataset(dataset_name, tokenizer, max_samples=None, model_type="seq_c
             tokenized_dataset = dataset.map(tokenize_function, batched=True)
         
         return tokenized_dataset, 4  # 4 classes for AG News
+    elif dataset_name == "samsum":
+        # SAMSum requires trusting remote code for its loading script
+        dataset = load_dataset("samsum", trust_remote_code=True)
+        
+        # Subsample for quick local testing
+        if max_samples:
+            dataset["train"] = dataset["train"].select(range(min(max_samples, len(dataset["train"]))))
+            dataset["test"] = dataset["test"].select(range(min(max_samples//2, len(dataset["test"]))))
+            # Use validation split if test split is too small after subsampling
+            if len(dataset["test"]) == 0 and "validation" in dataset:
+                 dataset["test"] = dataset["validation"].select(range(min(max_samples//2, len(dataset["validation"]))))
+
+        # Ensure model is seq2seq for summarization
+        if model_type != "seq2seq":
+            raise ValueError(f"SAMSum dataset requires a sequence-to-sequence model (like T5), but got model_type='{model_type}'")
+
+        prefix = "summarize: "
+        def tokenize_samsum(examples):
+            dialogues = [prefix + dialogue for dialogue in examples["dialogue"]]
+            summaries = examples["summary"]
+
+            model_inputs = tokenizer(
+                dialogues, padding="max_length", truncation=True, max_length=512 # Longer context for dialogues
+            )
+            
+            # Tokenize labels (summaries)
+            with tokenizer.as_target_tokenizer():
+                labels_encodings = tokenizer(
+                    summaries, padding="max_length", truncation=True, max_length=128 # Max summary length
+                )
+            
+            model_inputs["labels"] = labels_encodings["input_ids"]
+            return model_inputs
+
+        tokenized_dataset = dataset.map(tokenize_samsum, batched=True)
+        return tokenized_dataset, 0 # num_labels not applicable for summarization
     else:
         raise ValueError(f"Dataset {dataset_name} preparation not implemented yet")
-
-
-# Function to configure PEFT
-def get_peft_config(peft_method, model_type="seq_cls"):
-    if peft_method == "lora":
-        if model_type == "seq_cls":
-            return LoraConfig(
-                task_type=TaskType.SEQ_CLS,
-                inference_mode=False,
-                r=8,
-                lora_alpha=32,
-                lora_dropout=0.1,
-                target_modules=["q", "v"]  # This will vary by model architecture
-            )
-        else:  # seq2seq
-            return LoraConfig(
-                task_type=TaskType.SEQ_2_SEQ_LM,
-                inference_mode=False,
-                r=8,
-                lora_alpha=32,
-                lora_dropout=0.1,
-                target_modules=["q", "v"]
-            )
-    elif peft_method == "prefix_tuning":
-        if model_type == "seq_cls":
-            return PrefixTuningConfig(
-                task_type=TaskType.SEQ_CLS,
-                inference_mode=False,
-                num_virtual_tokens=20,
-                prefix_projection=True
-            )
-        else:  # seq2seq
-            return PrefixTuningConfig(
-                task_type=TaskType.SEQ_2_SEQ_LM,
-                inference_mode=False,
-                num_virtual_tokens=20,
-                prefix_projection=True
-            )
-    else:
-        raise ValueError(f"PEFT method {peft_method} configuration not implemented yet")
 
 
 # Function to log metrics including memory usage
@@ -255,7 +268,7 @@ def get_class_from_generated_text(text, label_map=None):
         label_map = {
             "world": 0,
             "sports": 1,
-            "business": 2,
+            "business": 2, 
             "technology": 3,
             "tech": 3,  # Handle abbreviations
         }
@@ -315,20 +328,38 @@ def train_and_evaluate(args):
     print(f"Preparing dataset: {args.dataset_name}")
     dataset, num_labels = prepare_dataset(args.dataset_name, tokenizer, args.max_samples, model_type)
     
-    # Create PEFT model if specified, otherwise use the base model for full fine-tuning
+    # Apply PEFT method if enabled
     if args.use_peft:
-        print(f"Applying PEFT method: {args.peft_method}")
-        peft_config = get_peft_config(args.peft_method, model_type)
-        model = get_peft_model(model, peft_config)
+        if args.peft_method == "lora":
+            print(f"Applying LoRA PEFT method...")
+            peft_config = LoraConfig(
+                task_type=TaskType.SEQ_2_SEQ_LM
+                if model_type == "seq2seq"
+                else TaskType.SEQ_CLS,
+                inference_mode=False,
+                r=8,
+                lora_alpha=32,
+                lora_dropout=0.1,
+            )
+            model = get_peft_model(model, peft_config)
+        elif args.peft_method == "bitfit":
+            print(f"Applying BitFit PEFT method...")
+            # Freeze all parameters first
+            for param in model.parameters():
+                param.requires_grad = False
+            # Unfreeze bias parameters
+            for name, param in model.named_parameters():
+                if "bias" in name:
+                    param.requires_grad = True
+        else:
+            # This should not happen due to argparse choices, but good practice
+            raise ValueError(f"Unsupported PEFT method: {args.peft_method}")
     else:
-        print("Using full fine-tuning (no PEFT)")
-    
-    # Print number of trainable parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Total parameters: {total_params}")
-    print(f"Trainable parameters: {trainable_params} ({100 * trainable_params / total_params:.2f}%)")
-    
+        print("Using Full Fine-tuning (no PEFT method applied).")
+
+    # Print number of trainable parameters *after* setup
+    print_trainable_parameters(model)
+
     # Define label map for classification with T5
     label_map = {
         "world": 0,
@@ -369,7 +400,7 @@ def train_and_evaluate(args):
                 "input_ids": torch.stack([torch.tensor(x["input_ids"]) for x in batch]),
                 "attention_mask": torch.stack([torch.tensor(x["attention_mask"]) for x in batch]),
                 "labels": torch.stack([torch.tensor(x["labels"]) for x in batch]),
-                "decoder_attention_mask": torch.ones((len(batch), 8), dtype=torch.long),
+                "decoder_attention_mask": torch.ones_like(torch.stack([torch.tensor(x["labels"]) for x in batch])),
             },
         )
         
@@ -380,7 +411,7 @@ def train_and_evaluate(args):
                 "input_ids": torch.stack([torch.tensor(x["input_ids"]) for x in batch]),
                 "attention_mask": torch.stack([torch.tensor(x["attention_mask"]) for x in batch]),
                 "labels": torch.stack([torch.tensor(x["labels"]) for x in batch]),
-                "decoder_attention_mask": torch.ones((len(batch), 8), dtype=torch.long),
+                "decoder_attention_mask": torch.ones_like(torch.stack([torch.tensor(x["labels"]) for x in batch])),
             },
         )
     
@@ -505,7 +536,7 @@ def train_and_evaluate(args):
                     generated_ids = model.generate(
                         input_ids=batch["input_ids"],
                         attention_mask=batch["attention_mask"],
-                        max_length=8,
+                        max_length=128,
                     )
                     
                     # Convert generated IDs to text
@@ -523,8 +554,12 @@ def train_and_evaluate(args):
                 all_labels.extend(labels)
         
         # Calculate metrics
-        accuracy = accuracy_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, all_preds, average='weighted')
+        if args.dataset_name in ["ag_news", "cola"]:
+            accuracy = accuracy_score(all_labels, all_preds)
+            f1 = f1_score(all_labels, all_preds, average='weighted')
+        else: # For samsum or other generation tasks, skip classification metrics for now
+            accuracy = 0.0
+            f1 = 0.0 
         
         # Calculate epoch time
         epoch_end_time = time.time()
@@ -534,28 +569,32 @@ def train_and_evaluate(args):
         # Log evaluation metrics
         metrics = {
             "epoch": epoch,
-            "eval_loss": eval_loss if model_type == "seq_cls" else 0.0,
-            "accuracy": accuracy,
-            "f1_score": f1,
+            # "eval_loss": eval_loss if model_type == "seq_cls" else 0.0, # Loss calculation might differ for generation
+            "accuracy": accuracy, # Will be 0 for non-classification
+            "f1_score": f1,       # Will be 0 for non-classification
             "epoch_time_seconds": epoch_time,
         }
         log_metrics(global_step, metrics, args.log_wandb)
         
-        # Check for convergence
-        if epoch > 0:
-            accuracy_change = abs(accuracy - best_accuracy)
-            if accuracy_change < convergence_threshold:
-                convergence_counter += 1
-                if convergence_counter >= convergence_patience and convergence_step is None:
-                    convergence_step = global_step
-                    print(f"Model converged at step {convergence_step}")
-            else:
-                convergence_counter = 0
-        
-        # Update best accuracy
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
-            print(f"New best accuracy: {best_accuracy:.4f}")
+        # Check for convergence (based on accuracy for now)
+        if args.dataset_name in ["ag_news", "cola"]:
+             if epoch > 0:
+                 accuracy_change = abs(accuracy - best_accuracy)
+                 if accuracy_change < convergence_threshold:
+                     convergence_counter += 1
+                     if convergence_counter >= convergence_patience and convergence_step is None:
+                         convergence_step = global_step
+                         print(f"Model converged at step {convergence_step} based on accuracy")
+                 else:
+                     convergence_counter = 0
+             # Update best accuracy
+             if accuracy > best_accuracy:
+                 best_accuracy = accuracy
+                 print(f"New best accuracy: {best_accuracy:.4f}")
+        else:
+            # For generation tasks, convergence check might need different logic (e.g., eval loss, ROUGE)
+            # For now, we don't update best_accuracy or check convergence
+            pass
     
     # Training complete
     training_time = time.time() - training_start_time

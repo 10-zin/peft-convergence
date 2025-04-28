@@ -11,7 +11,7 @@ import subprocess
 import sys
 import argparse
 
-def run_training_test(use_peft, peft_method, learning_rate, dataset_name="ag_news"):
+def run_training_test(use_peft, peft_method, learning_rate, dataset_name="ag_news", weight_decay="0.01"):
     """Runs peft_training.py with specific test parameters."""
     
     test_mode = "Full Fine-tuning"
@@ -28,6 +28,7 @@ def run_training_test(use_peft, peft_method, learning_rate, dataset_name="ag_new
         "--optimizer", "adamw",                  # Standard optimizer
         "--lr_schedule", "constant",             # Simple LR schedule
         "--learning_rate", learning_rate,         # Learning rate for PEFT
+        "--weight_decay", weight_decay,           # Weight decay
         "--batch_size", "4",                     # Small batch size for MacBook
         "--num_epochs", "1",                     # Just one epoch for testing
         "--max_samples", "32",                   # Very few samples for quick test
@@ -46,29 +47,68 @@ def run_training_test(use_peft, peft_method, learning_rate, dataset_name="ag_new
 
     # Run the command
     print(f"Command: {' '.join(cmd)}")
+    output_log = []
     try:
-        subprocess.run(cmd, check=True)
+        # Capture output
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+            print(line, end='') # Print output in real-time
+            output_log.append(line.strip())
+        process.wait()
+        if process.returncode != 0:
+             raise subprocess.CalledProcessError(process.returncode, cmd)
         print(f"----- {test_mode} Test Completed Successfully -----")
+        return True, "\n".join(output_log) # Return success and log
     except subprocess.CalledProcessError as e:
-        print(f"----- {test_mode} Test FAILED -----")
-        print(e)
+        print(f"----- {test_mode} Test FAILED ----- Error Code: {e.returncode}")
+        # print(e)
+        return False, "\n".join(output_log) # Return failure and log
     except FileNotFoundError:
         print("Error: 'python' command not found. Make sure Python is in your PATH.")
         sys.exit(1)
+    except Exception as e:
+        print(f"----- {test_mode} Test FAILED with unexpected error ----- ")
+        print(e)
+        return False, "\n".join(output_log) # Return failure and log
 
 if __name__ == "__main__":
     # Test Full Fine-tuning
-    # run_training_test(use_peft=False, peft_method='none', learning_rate='5e-4') # peft_method is ignored when use_peft=False
+    # run_training_test(use_peft=False, peft_method='none', learning_rate='5e-4', weight_decay='0.01')
 
-    # Test PEFT with LoRA
-    # run_training_test(use_peft=True, peft_method='lora', learning_rate='5e-4')
+    # # Test PEFT with LoRA
+    # run_training_test(use_peft=True, peft_method='lora', learning_rate='5e-4', weight_decay='0.01')
 
-    # Test PEFT with BitFit on AG News
+    # # Test PEFT with BitFit on AG News
     # # Use a higher learning rate for BitFit as per recommendations
-    # run_training_test(use_peft=True, peft_method='bitfit', learning_rate='3e-3', dataset_name='ag_news')
+    # run_training_test(use_peft=True, peft_method='bitfit', learning_rate='3e-3', dataset_name='ag_news', weight_decay='0.0') # Bitfit often uses 0 wd
     
     # Test PEFT with LoRA on SAMSum
-    run_training_test(use_peft=True, peft_method='lora', learning_rate='5e-4', dataset_name='samsum')
+    samsum_success, samsum_log = run_training_test(use_peft=True, peft_method='lora', learning_rate='5e-4', dataset_name='samsum', weight_decay='0.01')
+
+    # --- Verification Step for SAMSum ROUGE --- 
+    if samsum_success:
+        print("\n----- Verifying SAMSum ROUGE Metrics ----- ")
+        rouge_found = False
+        for line in samsum_log.splitlines():
+            if "'rouge1':" in line and "'rouge2':" in line and "'rougeL':" in line:
+                 print(f"Found ROUGE metrics log line: {line}")
+                 # Basic check: ensure scores are not exactly zero (they should be floats)
+                 if "'rouge1': 0.0," not in line.replace(" ", "") and \
+                    "'rougeL': 0.0," not in line.replace(" ", ""):
+                     rouge_found = True
+                     print("ROUGE scores seem present and non-zero. Evaluation likely worked.")
+                     break
+                 else:
+                     print("Warning: ROUGE scores found but appear to be zero. Check calculation.")
+                     break # Found the line, no need to continue
+        if not rouge_found:
+             print("Error: Could not find ROUGE metrics in the SAMSum test output log. Evaluation might have failed silently.")
+    else:
+        print("\nSAMSum test failed, skipping ROUGE verification.")
+    # --------------------------------------------
 
     print("\nAll tests completed! If they ran without errors, the setup is working correctly.")
     print("For a full training run in Google Colab, you can use:")
